@@ -34,7 +34,7 @@ struct String:std::string {
  void remove(size_t at){erase(at);}
  size_t length()const{return size();} bool isEmpty()const{return empty();}
 };
-size_t maxRead=0,maxWrite=0;bool failWrites=false;int failReadCall=-1,readCalls=0;
+size_t maxRead=0,maxWrite=0;bool failWrites=false,reverseDirectory=false;int failReadCall=-1,readCalls=0;
 struct File {
  struct Impl {
   std::fstream io;String path;std::vector<sf::path> entries;size_t index=0;bool dir=false;
@@ -56,7 +56,7 @@ struct FS {
  File open(const String&path,const char*mode="r"){
   File f;auto real=root/path.substr(1);if(!sf::exists(real)&&strcmp(mode,"w"))return f;
   f.p=std::make_shared<File::Impl>();f.p->path=path;f.p->dir=sf::is_directory(real);
-  if(f.p->dir){for(auto&e:sf::directory_iterator(real))f.p->entries.push_back(e.path());return f;}
+  if(f.p->dir){for(auto&e:sf::directory_iterator(real))f.p->entries.push_back(e.path());if(reverseDirectory)std::reverse(f.p->entries.begin(),f.p->entries.end());return f;}
   if(limit){assert(active<limit);f.p->slots=&active;++active;peak=std::max(peak,active);}
   f.p->io.open(real,std::ios::binary|(strcmp(mode,"w")==0?(std::ios::out|std::ios::trunc):std::ios::in));return f;
  }
@@ -101,7 +101,7 @@ void publish(const Track&t,ResultKind kind,const char*status,uint32_t delay=0,ui
 checks=r'''
 std::string load(const sf::path&p){std::ifstream f(p,std::ios::binary);return {std::istreambuf_iterator<char>(f),{}};}
 int main(int argc,char**argv){
- assert(argc==2);flashFS.root=sf::path(argv[1])/"sd";internal.root=sf::path(argv[1])/"internal";
+ assert(argc==3);reverseDirectory=std::string(argv[2])=="reverse";flashFS.root=sf::path(argv[1])/"sd";internal.root=sf::path(argv[1])/"internal";
  flashFS.limit=2;
  sf::create_directories(flashFS.root/"cache");sf::create_directories(internal.root/"cache");cacheFS=&flashFS;
  lyrics.text.words=lyricWords;lyrics.cues.entries=cueWords;Track t;
@@ -148,6 +148,9 @@ int main(int argc,char**argv){
  for(int i=0;i<6;++i){std::ofstream f(internal.root/"cache"/("large"+std::to_string(i)+".rgb"),std::ios::binary);std::string payload(120*1024,'x');f<<payload;}
  pruneCache(vinyl::ART_BYTES);size_t cachedBytes=0;for(auto&e:sf::directory_iterator(internal.root/"cache")){auto name=e.path().filename().string();if(name.size()>4&&(name.substr(name.size()-4)==".rgb"||name.substr(name.size()-4)==".lrc"))cachedBytes+=sf::file_size(e.path())+sizeof(Header);}assert(cachedBytes+vinyl::ART_BYTES<=CACHE_BYTES);
  assert(flashFS.peak==2&&flashFS.active==0);
+ // Eviction above may legitimately remove song.lrc: directory iteration order
+ // differs between filesystems. Recreate the fixture for memory-wait recovery.
+ cacheFS=&flashFS;memcpy(staging,lrc,strlen(lrc));writeCache("/cache/song.lrc",strlen(lrc));
  retryCount=2;for(unsigned i=0;i<10;++i){publish(t,ResultKind::Status,"LOW MEMORY",30000);assert(memoryWait.pending&&retryCount==2&&retryAt==0);}
  cacheFS=&flashFS;assert(streamCache(t,"/cache/song.lrc",false)&&!memoryWait.pending);generation=2;publish(t,ResultKind::Status,"LOW MEMORY",30000);assert(!memoryWait.pending);generation=1;
  assert(flashFS.active==0);
@@ -157,4 +160,6 @@ int main(int argc,char**argv){
 with tempfile.TemporaryDirectory() as temp:
  src=Path(temp)/'cache.cpp';exe=Path(temp)/'cache';src.write_text(stubs+types+queue+handler+publish+cache+local_code+checks)
  subprocess.run(['c++','-std=c++17','-g','-fsanitize=address,undefined','-I'+str(base/'shared'),str(src),'-o',str(exe)],check=True)
- subprocess.run([str(exe),temp],check=True)
+ for order in ('native','reverse'):
+  directory=Path(temp)/order;directory.mkdir()
+  subprocess.run([str(exe),str(directory),order],check=True)
